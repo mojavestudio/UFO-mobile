@@ -13,22 +13,26 @@
 </head>
 <body>
   <style>
-    html, body { margin:0; background:transparent }
+    html, body { margin:0; height:100%; background:transparent }
     #outer  { position:relative; width:100vw }
     #sticky { position:sticky; top:0; width:100vw; height:100vh; height:100svh; }
 
     .cover { position:absolute; inset:0; visibility:hidden; }
     .cover.ready { visibility:visible; }
 
+    /* Make the web component truly fluid and viewport-sized */
     spline-viewer {
       display:block !important;
-      width:100% !important;
-      height:100% !important;
+      width:100vw !important;
+      height:100svh !important;
       max-width:none !important;
       min-width:0 !important;
       box-sizing:border-box !important;
       contain: layout paint;
     }
+    /* Optional: fallback for older browsers */
+    #sticky, spline-viewer { height:100vh }
+
     spline-viewer::part(container),
     spline-viewer::part(canvas){
       width:100% !important;
