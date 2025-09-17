@@ -65,6 +65,10 @@
       const SITE_BASE = new URL('./', location.href).href;
       const SCENE_URL = SITE_BASE + 'scene.splinecode';
 
+      // Detect if actually inside an iframe; only honor external=1 when framed
+      const isFramed = (() => { try { return window.top !== window.self; } catch { return true; } })();
+      const external = qp.get('external') === '1' && isFramed;
+
       // --- 1) Lock sticky height to integer CSS pixels ---
       const vpH = () => Math.round((visualViewport?.height || innerHeight) || 0);
       function lockSticky(px){ sticky.style.height = px + 'px'; return px; }
@@ -89,7 +93,7 @@
           const enough = Date.now() - last > 300;
           if (force || (delta >= 48 && enough)) {
             lockedVp = lockSticky(curr);
-            if (qp.get('external') !== '1' || !gotRange) setOuterFallback();
+            if (!external || !gotRange) setOuterFallback();
             last = Date.now();
             log('relock', { lockedVp, delta, t: (performance.now()-t0).toFixed(1)+'ms' });
           }
@@ -101,26 +105,26 @@
 
       // --- 3) Wait for stable size, then set url ---
       let urlSet = false;
-      let stableFrames = 0;
-      let prevW = 0, prevH = 0;
-      const tolerance = 0.5; // px
-      const ro = new ResizeObserver((entries) => {
-        const rect = entries[0]?.contentRect;
-        if (!rect) return;
-        const { width, height } = rect;
-        const wStable = Math.abs(width - prevW) <= tolerance;
-        const hStable = Math.abs(height - prevH) <= tolerance;
-        if (width > 0 && height > 0 && wStable && hStable) {
-          stableFrames++;
-        } else {
-          stableFrames = 0;
-        }
-        prevW = width; prevH = height;
-        if (!urlSet && stableFrames >= 2) {
+      // Fallback timer in case ResizeObserver never stabilizes
+      const urlFallbackTimer = setTimeout(() => {
+        if (!urlSet) {
           urlSet = true;
           const overrideUrl = qp.get('url');
           const finalUrl = overrideUrl || SCENE_URL;
           try { viewer.setAttribute('url', finalUrl); } catch {}
+          log('set url (timeout)', { finalUrl, t: (performance.now()-t0).toFixed(1)+'ms' });
+        }
+      }, 1000);
+      const ro = new ResizeObserver((entries) => {
+        const rect = entries[0]?.contentRect;
+        if (!rect) return;
+        const { width, height } = rect;
+        if (!urlSet && width > 0 && height > 0) {
+          urlSet = true;
+          const overrideUrl = qp.get('url');
+          const finalUrl = overrideUrl || SCENE_URL;
+          try { viewer.setAttribute('url', finalUrl); } catch {}
+          clearTimeout(urlFallbackTimer);
           ro.disconnect();
           log('set url', { finalUrl, width, height, t: (performance.now()-t0).toFixed(1)+'ms' });
         }
@@ -133,7 +137,7 @@
 
       function tryReveal() {
         if (!gotLoad) return;
-        if (qp.get('external') === '1' && !(gotRange && gotProgress)) return;
+        if (external && !(gotRange && gotProgress)) return;
 
         if (gotRange) outer.style.height = (rangePx + lockedVp) + 'px';
 
@@ -155,7 +159,7 @@
       });
 
       // --- 5) Parent ↔ child scroll sync when ?external=1 ---
-      if (qp.get('external') === '1') {
+      if (external) {
         function pingParent(){ try { parent?.postMessage({ type:'HELLO_FROM_CHILD', v:13 }, '*'); } catch {} }
         addEventListener('message', (e) => {
           const d = e?.data; if (!d) return;
