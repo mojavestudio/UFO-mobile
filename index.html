@@ -1,0 +1,191 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1"
+  />
+  <title>Mojave UFO — Mobile</title>
+
+  <!-- Use the pinned, vendored viewer in this folder -->
+  <script type="module" src="./vendor/spline-viewer/build/spline-viewer.js"></script>
+</head>
+<body>
+  <style>
+    html, body { margin:0; background:transparent }
+    #outer  { position:relative; width:100vw }
+    #sticky { position:sticky; top:0; width:100vw; height:100vh; height:100svh; }
+
+    .cover { position:absolute; inset:0; visibility:hidden; }
+    .cover.ready { visibility:visible; }
+
+    spline-viewer {
+      display:block !important;
+      width:100% !important;
+      height:100% !important;
+      max-width:none !important;
+      min-width:0 !important;
+      box-sizing:border-box !important;
+      contain: layout paint;
+    }
+    spline-viewer::part(container),
+    spline-viewer::part(canvas){
+      width:100% !important;
+      height:100% !important;
+      max-width:none !important;
+    }
+  </style>
+
+  <section id="outer">
+    <div id="sticky">
+      <div class="cover" id="cover">
+        <spline-viewer
+          id="viewer"
+          events-target="local"
+          loading="eager"
+          style="display:block;width:100%;height:100%"
+        ></spline-viewer>
+      </div>
+    </div>
+  </section>
+
+  <script>
+    (function () {
+      const t0 = performance.now();
+      const log = (...a) => console.log('[mojave_ufo:mobile-repo]', ...a);
+
+      const qp     = new URLSearchParams(location.search);
+      const outer  = document.getElementById('outer');
+      const sticky = document.getElementById('sticky');
+      const cover  = document.getElementById('cover');
+      const viewer = document.getElementById('viewer');
+
+      // Build absolute URL for the local scene so internal iframe loads correctly
+      const SITE_BASE = new URL('./', location.href).href;
+      const SCENE_URL = SITE_BASE + 'scene.splinecode';
+
+      // --- 1) Lock sticky height to integer CSS pixels ---
+      const vpH = () => Math.round((visualViewport?.height || innerHeight) || 0);
+      function lockSticky(px){ sticky.style.height = px + 'px'; return px; }
+      let lockedVp = lockSticky(vpH());
+      log('lockSticky', { lockedVp, t: (performance.now()-t0).toFixed(1)+'ms' });
+
+      // --- 2) Pre-define scroll range before paint ---
+      function setOuterFallback(){
+        const px = parseInt(qp.get('scrollpx') || '0', 10);
+        if (px) { outer.style.height = px + 'px'; return; }
+        const mult = parseFloat(qp.get('scrollvh') || '170', 10);
+        outer.style.height = Math.round(lockedVp * (mult / 100)) + 'px';
+      }
+      setOuterFallback();
+
+      // Rerun only on real resizes / orientation changes
+      let raf = 0, last = Date.now();
+      function maybeRelock(force=false){
+        cancelAnimationFrame(raf);
+        raf = requestAnimationFrame(() => {
+          const curr = vpH(), delta = Math.abs(curr - lockedVp);
+          const enough = Date.now() - last > 300;
+          if (force || (delta >= 48 && enough)) {
+            lockedVp = lockSticky(curr);
+            if (qp.get('external') !== '1' || !gotRange) setOuterFallback();
+            last = Date.now();
+            log('relock', { lockedVp, delta, t: (performance.now()-t0).toFixed(1)+'ms' });
+          }
+        });
+      }
+      addEventListener('orientationchange', () => maybeRelock(true), { passive:true });
+      visualViewport?.addEventListener('resize', () => maybeRelock(false), { passive:true });
+      addEventListener('resize', () => maybeRelock(false), { passive:true });
+
+      // --- 3) Wait for stable size, then set url ---
+      let urlSet = false;
+      let stableFrames = 0;
+      let prevW = 0, prevH = 0;
+      const tolerance = 0.5; // px
+      const ro = new ResizeObserver((entries) => {
+        const rect = entries[0]?.contentRect;
+        if (!rect) return;
+        const { width, height } = rect;
+        const wStable = Math.abs(width - prevW) <= tolerance;
+        const hStable = Math.abs(height - prevH) <= tolerance;
+        if (width > 0 && height > 0 && wStable && hStable) {
+          stableFrames++;
+        } else {
+          stableFrames = 0;
+        }
+        prevW = width; prevH = height;
+        if (!urlSet && stableFrames >= 2) {
+          urlSet = true;
+          const overrideUrl = qp.get('url');
+          const finalUrl = overrideUrl || SCENE_URL;
+          try { viewer.setAttribute('url', finalUrl); } catch {}
+          ro.disconnect();
+          log('set url', { finalUrl, width, height, t: (performance.now()-t0).toFixed(1)+'ms' });
+        }
+      });
+      ro.observe(sticky);
+
+      // --- 4) Reveal when ready (and when parent sync is ready if embedded) ---
+      let gotLoad = false, gotRange = false, gotProgress = false;
+      let rangePx = 0;
+
+      function tryReveal() {
+        if (!gotLoad) return;
+        if (qp.get('external') === '1' && !(gotRange && gotProgress)) return;
+
+        if (gotRange) outer.style.height = (rangePx + lockedVp) + 'px';
+
+        requestAnimationFrame(() => {
+          requestAnimationFrame(() => {
+            cover.classList.add('ready');
+            log('REVEAL', { t: (performance.now()-t0).toFixed(1)+'ms' });
+          });
+        });
+      }
+
+      customElements.whenDefined('spline-viewer').then(() => {
+        viewer.addEventListener('load-start', () => log('load-start', (performance.now()-t0).toFixed(1)+'ms'));
+        viewer.addEventListener('load-complete', () => {
+          gotLoad = true;
+          log('load-complete', (performance.now()-t0).toFixed(1)+'ms');
+          tryReveal();
+        });
+      });
+
+      // --- 5) Parent ↔ child scroll sync when ?external=1 ---
+      if (qp.get('external') === '1') {
+        function pingParent(){ try { parent?.postMessage({ type:'HELLO_FROM_CHILD', v:13 }, '*'); } catch {} }
+        addEventListener('message', (e) => {
+          const d = e?.data; if (!d) return;
+          if (d.type === 'SCROLL_RANGE' && Number.isFinite(d.rangePx)) {
+            rangePx = Math.max(0, d.rangePx);
+            gotRange = true;
+            log('SCROLL_RANGE', { rangePx, t: (performance.now()-t0).toFixed(1)+'ms' });
+            tryReveal();
+          } else if (d.type === 'SCROLL_PROGRESS' && Number.isFinite(d.progress)) {
+            gotProgress = true;
+            if (cover.classList.contains('ready')) {
+              const max = document.documentElement.scrollHeight - lockedVp;
+              document.documentElement.scrollTop = d.progress * Math.max(0, max);
+            }
+            log('SCROLL_PROGRESS', { progress: d.progress.toFixed(3), t: (performance.now()-t0).toFixed(1)+'ms' });
+            tryReveal();
+          }
+        });
+        pingParent();
+        addEventListener('load', pingParent, { once:true });
+        setTimeout(() => {
+          if (!(gotRange && gotProgress)) {
+            log('no parent reply → fallback', (performance.now()-t0).toFixed(1)+'ms');
+            tryReveal();
+          }
+        }, 1000);
+      }
+    })();
+  </script>
+</body>
+</html>
+
+
